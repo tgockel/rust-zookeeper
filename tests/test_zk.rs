@@ -1,5 +1,4 @@
-use zookeeper::{CreateMode, WatchedEvent, ZooKeeper};
-use zookeeper::acls;
+use zookeeper::{Acl, CreateMode, WatchedEvent, ZooKeeper};
 use zookeeper::KeeperState;
 
 use ZkCluster;
@@ -36,7 +35,7 @@ fn zk_test() {
     // Do the tests
     let create = zk.create("/test",
                            vec![8, 8],
-                           acls::OPEN_ACL_UNSAFE.clone(),
+                           Acl::open_unsafe().clone(),
                            CreateMode::Ephemeral);
     assert_eq!(create.ok(), Some("/test".to_owned()));
 
@@ -51,18 +50,21 @@ fn zk_test() {
 
     // Set/Get Big-Data(tm)
     let data = vec![7; 1024 * 1000];
-    let set_data = zk.set_data("/test", data.clone(), -1);
+    let set_data = zk.set_data("/test", data.clone(), None);
     assert!(set_data.is_ok());
-    let get_data = zk.get_data("/test", false);
-    assert!(get_data.is_ok());
-    assert_eq!(get_data.unwrap().0, data);
+    let get_response = zk.get_data("/test", false);
+    assert!(get_response.is_ok());
+    let (get_data, get_stat) = get_response.unwrap();
+    assert_eq!(data.len(), get_data.len());
+    assert_eq!(data.len(), get_stat.data_length as usize);
+    assert_eq!(data, get_data);
 
     let children = zk.get_children("/", true);
     assert!(children.is_ok());
 
     let children = zk.get_children_w("/", |event: WatchedEvent| println!("Custom {:?}", event));
     assert!(children.is_ok());
-    let delete = zk.delete("/test", -1);
+    let delete = zk.delete("/test", None);
     assert!(delete.is_ok());
 
 
