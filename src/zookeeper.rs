@@ -1,6 +1,7 @@
 use acl::*;
 use consts::*;
 use data::*;
+use multi::*;
 use proto::*;
 use io::ZkIo;
 use listeners::{ListenerSet, Subscription};
@@ -494,6 +495,20 @@ impl ZooKeeper {
         let response: SetDataResponse = try!(self.request(OpCode::SetData, self.xid(), req, None));
 
         Ok(response.stat)
+    }
+
+    pub fn commit<'a>(&self, operations: &'a [Op]) -> ZkResult<Vec<ZkResult<OpResult>>> {
+        // TODO: Deal with chroot on paths
+        let req = TransactionRequest {
+            ops: operations
+        };
+
+        let response: TransactionResponse = self.request(OpCode::Transaction,
+                                                         self.xid(),
+                                                         req,
+                                                         None)?;
+
+        Ok(response.responses)
     }
 
     /// Adds a state change `Listener`, which will be notified of changes to the client's `ZkState`.

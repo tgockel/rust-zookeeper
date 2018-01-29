@@ -6,6 +6,7 @@ extern crate zookeeper;
 
 mod test_zk;
 mod test_cache;
+mod test_multi;
 mod test_recursive;
 
 use std::io::{BufRead, BufReader, Write};

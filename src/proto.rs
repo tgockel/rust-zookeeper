@@ -1,7 +1,9 @@
 use acl::{Acl, Permission};
 use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
-use consts::{KeeperState, WatchedEventType};
+use consts::{KeeperState, WatchedEventType, ZkError};
 use data::Stat;
+use multi::{Op, OpResult};
+use zookeeper::ZkResult;
 use std::convert::From;
 use std::io::{Cursor, Read, Write, Result, Error, ErrorKind};
 use watch::WatchedEvent;
@@ -19,6 +21,8 @@ pub enum OpCode {
     GetData = 4,
     SetData = 5,
     Ping = 11,
+    Check = 13,
+    Transaction = 14,
     CloseSession = -11,
 }
 
@@ -408,6 +412,119 @@ impl ReadFrom for GetDataResponse {
         let data = try!(reader.read_buffer());
         let stat = try!(Stat::read_from(reader));
         Ok(GetDataResponse { data_stat: (data, stat) })
+    }
+}
+
+pub struct TransactionRequest<'a> {
+    pub ops: &'a [Op]
+}
+
+impl <'a> WriteTo for TransactionRequest<'a> {
+    fn write_to(&self, writer: &mut Write) -> Result<()> {
+        for ref op in self.ops {
+            let type_code = match *op {
+                &Op::Check { ref path, ref version } => OpCode::Check,
+                &Op::Create { ref path, ref data, ref acl, ref mode } => OpCode::Create,
+                &Op::Delete { ref path, ref version } => OpCode::Delete,
+                &Op::SetData { ref path, ref data, ref version } => OpCode::SetData,
+            };
+
+            // Header for each entry in the multi:
+            writer.write_i32::<BigEndian>(type_code as i32)?;
+            writer.write_u8(0 as u8)?;          // "done": This isn't the closing entry
+            writer.write_i32::<BigEndian>(-1)?; // "err":  We haven't experienced an error
+
+            match *op {
+                &Op::Check { ref path, ref version } => {
+                    path.write_to(writer)?;
+                    writer.write_i32::<BigEndian>(version.unwrap_or(-1))?;
+                },
+                &Op::Create { ref path, ref data, ref acl, ref mode } => {
+                    path.write_to(writer)?;
+                    data.write_to(writer)?;
+                    acl.write_to(writer)?;
+                    writer.write_i32::<BigEndian>(mode.clone() as i32)?;
+                },
+                &Op::Delete { ref path, ref version } => {
+                    path.write_to(writer)?;
+                    writer.write_i32::<BigEndian>(version.unwrap_or(-1))?;
+                },
+                &Op::SetData { ref path, ref data, ref version } => {
+                    path.write_to(writer)?;
+                    data.write_to(writer)?;
+                    writer.write_i32::<BigEndian>(version.unwrap_or(-1))?;
+                }
+            }
+        }
+
+        // Mark end of operation with this thing that looks like the per-entry header
+        writer.write_i32::<BigEndian>(-1)?;
+        writer.write_u8(1)?;
+        writer.write_i32::<BigEndian>(-1)?;
+
+        Ok(())
+    }
+}
+
+pub struct TransactionResponse {
+    pub responses: Vec<ZkResult<OpResult>>,
+}
+
+#[derive(Debug, EnumConvertFromInt)]
+enum Completion {
+    Error = -1,
+    Empty = 0,
+    Stat = 1,
+    String = 6,
+}
+
+fn read_transaction_header<R: Read>(reader: &mut R) -> Result<(Completion, bool, i32)> {
+    let type_code = reader.read_i32::<BigEndian>()?;
+    let done = reader.read_u8()?;
+    let err = reader.read_i32::<BigEndian>()?;
+
+    Ok((Completion::from(type_code), done != 0, err))
+}
+
+impl ReadFrom for TransactionResponse {
+    fn read_from<R: Read>(reader: &mut R) -> Result<TransactionResponse> {
+        Ok(TransactionResponse {responses: vec![] } )
+
+        // TODO: This code is wrong, but it's unclear why...
+        /*let mut results: Vec<ZkResult<OpResult>> = vec![];
+        let mut result_idx = -1;
+        // I don't know the proper Rust way to write this:
+        // `for (size_t result_idx = 0; true; ++result_idx)`
+        loop {
+            result_idx += 1;
+            let (type_code, done, err) = read_transaction_header(&mut reader)?;
+
+            let entry = match type_code {
+                Completion::Error => {
+                    let err_code = reader.read_i32::<BigEndian>()?;
+                    Err(ZkError::from(err_code))
+                },
+                Completion::Empty => {
+                    Ok(OpResult::Empty{})
+                },
+                Completion::Stat => {
+                    Ok(OpResult::SetData{ stat: Stat::read_from(reader)? })
+                },
+                Completion::String => {
+                    Ok(OpResult::Create{ path: reader.read_string()? })
+                },
+                _ => {
+                    return Err(Error::new(ErrorKind::InvalidInput,
+                                          format!("Received unknown code {:?}", type_code)))
+                }
+            };
+            results.push(entry);
+
+            if done {
+                break;
+            }
+        }
+        Ok(TransactionResponse {responses: results })*/
     }
 }
 
